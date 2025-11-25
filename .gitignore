@@ -1,0 +1,29 @@
+# TTS auto-generated files
+../.tts/
+
+# Lua compiled files
+*.luac
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files
+tests/
+/tmp/
+
+# Log files
+*.log
+
+# Personal configuration
+config.lua
+
+# Draft and backup files
+drafts/
+*.bak
+*_backup.*
+*_old.*
