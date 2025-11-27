@@ -34,6 +34,82 @@ local COLORS = {
 -- UTILITY FUNCTIONS
 --------------------------------------------------------------------------------
 
+-- Decode HTML entities (both named and numeric)
+local function decodeHTMLEntities(text)
+    if not text then return "" end
+    
+    -- Decode numeric entities (hex format: &#xHH; or &#xHHHH;)
+    -- Process character-by-character to avoid pattern complexity issues
+    local result = {}
+    local i = 1
+    while i <= #text do
+        if text:sub(i, i+2) == "&#x" or text:sub(i, i+1) == "&#" then
+            local isHex = text:sub(i, i+2) == "&#x"
+            local startPos = isHex and i+3 or i+2
+            local endPos = text:find(";", startPos, true)
+            
+            if endPos then
+                local numStr = text:sub(startPos, endPos-1)
+                local num = tonumber(numStr, isHex and 16 or 10)
+                if num and num > 0 and num < 65536 then
+                    -- Convert numeric entity to character
+                    -- Common entities we care about:
+                    -- &#x27; or &#39; = apostrophe (')
+                    -- &#x2C; or &#44; = comma (,)
+                    -- &#x22; or &#34; = quote (")
+                    -- &#x2D; or &#45; = hyphen (-)
+                    if num == 39 then
+                        result[#result + 1] = "'"
+                    elseif num == 44 then
+                        result[#result + 1] = ","
+                    elseif num == 34 then
+                        result[#result + 1] = '"'
+                    elseif num == 45 then
+                        result[#result + 1] = "-"
+                    elseif num == 38 then
+                        result[#result + 1] = "&"
+                    elseif num == 60 then
+                        result[#result + 1] = "<"
+                    elseif num == 62 then
+                        result[#result + 1] = ">"
+                    elseif num == 32 or num == 160 then
+                        result[#result + 1] = " "
+                    elseif num < 127 then
+                        -- ASCII printable character
+                        result[#result + 1] = string.char(num)
+                    else
+                        -- For Unicode beyond ASCII, just skip it or use placeholder
+                        result[#result + 1] = "?"
+                    end
+                    i = endPos + 1
+                else
+                    -- Invalid numeric entity, keep as-is
+                    result[#result + 1] = text:sub(i, i)
+                    i = i + 1
+                end
+            else
+                -- No closing semicolon, keep as-is
+                result[#result + 1] = text:sub(i, i)
+                i = i + 1
+            end
+        else
+            result[#result + 1] = text:sub(i, i)
+            i = i + 1
+        end
+    end
+    text = table.concat(result)
+    
+    -- Decode named entities
+    text = text:gsub("&quot;", '"')
+    text = text:gsub("&apos;", "'")
+    text = text:gsub("&amp;", "&")
+    text = text:gsub("&lt;", "<")
+    text = text:gsub("&gt;", ">")
+    text = text:gsub("&nbsp;", " ")
+    
+    return text
+end
+
 -- Clean HTML tags and decode entities (safe for very large strings)
 local function cleanText(text)
     if not text then return "" end
@@ -58,8 +134,8 @@ local function cleanText(text)
         end
         text = table.concat(result)
         
-        -- For very large strings, skip entity decoding to avoid pattern complexity
-        -- (Most entities are in HTML tags which we already removed)
+        -- Decode HTML entities even for large strings (safe character-by-character approach)
+        text = decodeHTMLEntities(text)
         
         -- Simple trim without patterns for large strings
         -- Remove leading whitespace
@@ -96,11 +172,10 @@ local function cleanText(text)
     success, result = pcall(function() return text:gsub("<[^>]+>", "") end)
     text = success and result or text
     
-    text = text:gsub("&quot;", '"')
-    text = text:gsub("&amp;", "&")
-    text = text:gsub("&lt;", "<")
-    text = text:gsub("&gt;", ">")
-    text = text:gsub("&nbsp;", " ")
+    -- Decode HTML entities
+    text = decodeHTMLEntities(text)
+    
+    -- Clean up any remaining tag fragments
     text = text:gsub("[<>]", "")
     
     success, result = pcall(function() return text:gsub("%s+", " ") end)
@@ -1126,14 +1201,14 @@ local function formatFighterCard(fighter)
     -- Header: Type, Category, Cost, XP (no redundant name) - purple for main info
     -- Add [EXOTIC BEAST] designation for pets, [VEHICLE+CREW] for combined units
     if fighter.category == "Exotic Beast" then
-        lines[#lines + 1] = string.format("[%s][EXOTIC BEAST][-] | [%s]%s | %s | Cost: %s | XP: %s[-]", 
+        lines[#lines + 1] = string.format("[%s][EXOTIC BEAST][-] | [%s]%s | %s | %s | XP %s[-]", 
             COLORS.orange, COLORS.purple, fighter.fighter_type, fighter.category, fighter.cost, fighter.xp or "0")
     elseif fighter.vehicle_name then
         -- This is a combined crew+vehicle unit
-        lines[#lines + 1] = string.format("[%s][VEHICLE+CREW][-] | [%s]%s | %s | Cost: %s | XP: %s[-]", 
+        lines[#lines + 1] = string.format("[%s][VEHICLE+CREW][-] | [%s]%s | %s | %s | XP %s[-]", 
             COLORS.pink, COLORS.purple, fighter.fighter_type, fighter.category, fighter.cost, fighter.xp or "0")
     else
-        lines[#lines + 1] = string.format("[%s]%s | %s | Cost: %s | XP: %s[-]", 
+        lines[#lines + 1] = string.format("[%s]%s | %s | %s | XP %s[-]", 
             COLORS.purple, fighter.fighter_type, fighter.category, fighter.cost, fighter.xp or "0")
     end
     lines[#lines + 1] = ""
@@ -1211,9 +1286,49 @@ local function formatFighterCard(fighter)
                 return string.rep(" ", leftPad) .. s .. string.rep(" ", rightPad)
             end
             
+            -- Group identical weapons by creating a signature for comparison
+            local function weaponSignature(weapon)
+                local sig = weapon.name .. "|"
+                for _, profile in ipairs(weapon.profiles) do
+                    sig = sig .. (profile.profile_name or "") .. ","
+                    sig = sig .. (profile.rg_short or "") .. ","
+                    sig = sig .. (profile.rg_long or "") .. ","
+                    sig = sig .. (profile.acc_short or "") .. ","
+                    sig = sig .. (profile.acc_long or "") .. ","
+                    sig = sig .. (profile.strength or "") .. ","
+                    sig = sig .. (profile.ap or "") .. ","
+                    sig = sig .. (profile.damage or "") .. ","
+                    sig = sig .. (profile.ammo or "") .. ","
+                    sig = sig .. (profile.traits or "") .. ";"
+                end
+                sig = sig .. (weapon.traits or "")
+                return sig
+            end
+            
+            local weaponGroups = {}
+            local weaponOrder = {}
+            for _, weapon in ipairs(fighter.weapons) do
+                local sig = weaponSignature(weapon)
+                if not weaponGroups[sig] then
+                    weaponGroups[sig] = {weapon = weapon, count = 0}
+                    weaponOrder[#weaponOrder + 1] = sig
+                end
+                weaponGroups[sig].count = weaponGroups[sig].count + 1
+            end
+            
             -- Full weapon profiles with stats
-            for weaponIdx, weapon in ipairs(fighter.weapons) do
-                lines[#lines + 1] = string.format("[%s]%s[-]", COLORS.cyan, weapon.name)
+            for groupIdx, sig in ipairs(weaponOrder) do
+                local group = weaponGroups[sig]
+                local weapon = group.weapon
+                local count = group.count
+                
+                -- Show weapon name with count if > 1
+                if count > 1 then
+                    lines[#lines + 1] = string.format("[%s]%dx %s[-]", COLORS.cyan, count, weapon.name)
+                else
+                    lines[#lines + 1] = string.format("[%s]%s[-]", COLORS.cyan, weapon.name)
+                end
+                
                 -- Show stat headers once per weapon with yellow color (aligned to match padStat output)
                 lines[#lines + 1] = string.format("[%s]  S      L      S      L    |    Str    Ap     D      Am   [-]", COLORS.yellow)
                 
@@ -1251,15 +1366,30 @@ local function formatFighterCard(fighter)
                 end
                 
                 -- Add spacing between weapons
-                if weaponIdx < #fighter.weapons then
+                if groupIdx < #weaponOrder then
                     lines[#lines + 1] = ""
                 end
             end
         else
-            -- Weapon names only
-            local weaponNames = {}
+            -- Weapon names only - group identical weapons with counts
+            local weaponCounts = {}
+            local weaponOrder = {}
             for _, weapon in ipairs(fighter.weapons) do
-                weaponNames[#weaponNames + 1] = weapon.name
+                if not weaponCounts[weapon.name] then
+                    weaponCounts[weapon.name] = 0
+                    weaponOrder[#weaponOrder + 1] = weapon.name
+                end
+                weaponCounts[weapon.name] = weaponCounts[weapon.name] + 1
+            end
+            
+            local weaponNames = {}
+            for _, name in ipairs(weaponOrder) do
+                local count = weaponCounts[name]
+                if count > 1 then
+                    weaponNames[#weaponNames + 1] = count .. "x " .. name
+                else
+                    weaponNames[#weaponNames + 1] = name
+                end
             end
             lines[#lines + 1] = "  " .. table.concat(weaponNames, ", ")
         end
